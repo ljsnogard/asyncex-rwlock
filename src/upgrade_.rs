@@ -11,16 +11,15 @@
 use pin_project::pin_project;
 use pin_utils::pin_mut;
 
-use atomex::TrCmpxchOrderings; 
 use abs_sync::{
     async_lock::{TrAcquire, TrReaderGuard, TrUpgradableReaderGuard, TrUpgrade},
     cancellation::{
         NonCancellableToken, TrCancellationToken, TrIntoFutureMayCancel,
     },
     never_cancel::FutureForTaskNeverCancel as FutNonCancel,
-    x_deps::pin_utils,
 };
-use mm_ptr::x_deps::atomic_sync::x_deps::{abs_sync, atomex};
+use asyncex_channel::x_deps::{abs_sync, atomex, pin_utils};
+use atomex::TrCmpxchOrderings; 
 
 use super::{
     contexts_::*,
@@ -244,7 +243,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> Drop for UpgradableReaderGuard<'a, 'g, T, O>
+impl<T, O> Drop for UpgradableReaderGuard<'_, '_, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,
@@ -254,7 +253,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> Deref for UpgradableReaderGuard<'a, 'g, T, O>
+impl<T, O> Deref for UpgradableReaderGuard<'_, '_, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,
@@ -266,7 +265,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> fmt::Debug for UpgradableReaderGuard<'a, 'g, T, O>
+impl<T, O> fmt::Debug for UpgradableReaderGuard<'_, '_, T, O>
 where
     T: fmt::Debug + ?Sized,
     O: TrCmpxchOrderings,
@@ -281,7 +280,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> fmt::Display for UpgradableReaderGuard<'a, 'g, T, O>
+impl<T, O> fmt::Display for UpgradableReaderGuard<'_, '_, T, O>
 where
     T: fmt::Display + ?Sized,
     O: TrCmpxchOrderings,
@@ -342,7 +341,7 @@ where
     }
 }
 
-impl<'l, 'a, T, O> IntoFuture for UpgradableReadAsync<'l, 'a, T, O>
+impl<'a, T, O> IntoFuture for UpgradableReadAsync<'_, 'a, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,
@@ -488,7 +487,7 @@ where
     }
 }
 
-impl<'a, 'g, 'u, T, O> TrIntoFutureMayCancel<'u> for UpgradeAsync<'a, 'g, 'u, T, O>
+impl<'a, 'u, T, O> TrIntoFutureMayCancel<'u> for UpgradeAsync<'a, '_, 'u, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,
@@ -596,7 +595,7 @@ where
     }
 }
 
-impl<'a, 'g, 'u, C, T, O> Future for UpgradeFuture<'a, 'g, 'u, C, T, O>
+impl<'a, 'u, C, T, O> Future for UpgradeFuture<'a, '_, 'u, C, T, O>
 where
     C: TrCancellationToken,
     T: ?Sized,

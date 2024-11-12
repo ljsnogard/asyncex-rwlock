@@ -4,16 +4,12 @@
     sync::atomic::AtomicUsize,
 };
 
-use atomex::{CmpxchResult, StrictOrderings, TrAtomicFlags, TrCmpxchOrderings};
-use pincol::{
-    linked_list::{PinnedList, PinnedListGuard, PinnedSlot},
-    x_deps::atomex,
-};
-
 use asyncex_channel::{
     oneshot::Oneshot,
     x_deps::{atomex, pincol},
 };
+use atomex::{CmpxchResult, StrictOrderings, TrAtomicFlags, TrCmpxchOrderings};
+use pincol::linked_list::{PinnedList, PinnedListGuard, PinnedSlot};
 
 type StVal = usize;
 

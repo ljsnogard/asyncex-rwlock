@@ -14,7 +14,10 @@ readme = "README.md"
 [dependencies]
 asyncex-channel = { git = "https://github.com/ljsnogard/asyncex-channel", tag = "0.0.1" }
 
+pin-project = { version = "1.1.*" }
+
 [dev-dependencies]
+asyncex-cancel = { git = "https://github.com/ljsnogard/asyncex-cancel.git", tag = "0.0.1" }
 core_malloc = { git = "https://github.com/ljsnogard/core_malloc.git", tag = "0.1.1" }
 futures-lite = { version = "2" }
 tokio = { version = "1", features = ["full"] }

@@ -4,6 +4,8 @@
 #![feature(type_alias_impl_trait)]
 #![feature(try_trait_v2)]
 
+#[cfg(test)]extern crate std;
+
 mod contexts_;
 mod impl_;
 mod reader_;
@@ -21,9 +23,9 @@ pub use writer_::{WriterGuard, WriteAsync, WriteFuture};
 #[cfg(test)]mod tests_;
 
 pub mod x_deps {
-    pub use async_channel;
+    pub use asyncex_channel;
 
-    pub use async_channel::x_deps::{
+    pub use asyncex_channel::x_deps::{
         abs_sync, atomex, atomic_sync, mm_ptr, pincol,
     };
 }

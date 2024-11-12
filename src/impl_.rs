@@ -11,15 +11,12 @@ use abs_sync::{
     async_lock::{TrAsyncRwLock, TrAcquire},
     cancellation::TrIntoFutureMayCancel,
 };
+use asyncex_channel::x_deps::{abs_sync, atomex, mm_ptr};
 use atomex::{
     PhantomAtomicPtr, StrictOrderings,
     TrAtomicData, TrAtomicFlags, TrCmpxchOrderings,
 };
-use mm_ptr::x_deps::{
-    atomex::CmpxchResult,
-    atomic_sync::x_deps::{abs_sync, atomex},
-};
-use asyncex_channel::x_deps::{abs_sync, atomex, mm_ptr};
+use mm_ptr::x_deps::atomex::CmpxchResult;
 
 use super::{
     contexts_::{CtxType, Message, WaitCtx, WakeList, WakeListGuard, WakeSlot},
@@ -665,6 +662,7 @@ where
                 .state()
                 .try_spin_compare_exchange_weak(expect, desire);
             if !r.is_succ() {
+                #[allow(unused)]
                 let v = r.into_inner();
                 #[cfg(test)]
                 log::warn!("[Acquire::downgrade_writer_to_upgradable_] {v:x}");

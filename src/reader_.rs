@@ -10,17 +10,18 @@
 use pin_project::pin_project;
 use pin_utils::pin_mut;
 
+use asyncex_channel::x_deps::{abs_sync, atomex, pin_utils};
 use atomex::TrCmpxchOrderings; 
 use abs_sync::{
     async_lock::TrReaderGuard,
     cancellation::{TrCancellationToken, TrIntoFutureMayCancel},
     never_cancel::FutureForTaskNeverCancel as FutNonCancel,
-    x_deps::pin_utils,
 };
-use mm_ptr::x_deps::atomic_sync::x_deps::{abs_sync, atomex};
 
-use crate::rwlock::contexts_::{CtxType, Message};
-use super::impl_::{Acquire, RwLock};
+use super::{
+    contexts_::{CtxType, Message},
+    impl_::{Acquire, RwLock},
+};
 
 /// A guard that releases the read lock when dropped.
 ///
@@ -67,7 +68,7 @@ where
     type Acquire = Acquire<'a, T, O>;
 }
 
-impl<'a, 'g, T, O> Drop for ReaderGuard<'a, 'g, T, O>
+impl<T, O> Drop for ReaderGuard<'_, '_, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,
@@ -83,7 +84,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> Deref for ReaderGuard<'a, 'g, T, O>
+impl<T, O> Deref for ReaderGuard<'_, '_, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,
@@ -95,7 +96,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> fmt::Debug for ReaderGuard<'a, 'g, T, O>
+impl<T, O> fmt::Debug for ReaderGuard<'_, '_, T, O>
 where
     T: fmt::Debug + ?Sized,
     O: TrCmpxchOrderings,
@@ -110,7 +111,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> fmt::Display for ReaderGuard<'a, 'g, T, O>
+impl<T, O> fmt::Display for ReaderGuard<'_, '_, T, O>
 where
     T: fmt::Display + ?Sized,
     O: TrCmpxchOrderings,
@@ -170,7 +171,7 @@ where
     }
 }
 
-impl<'l, 'a, T, O> IntoFuture for ReadAsync<'l, 'a, T, O>
+impl<'a, T, O> IntoFuture for ReadAsync<'_, 'a, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,

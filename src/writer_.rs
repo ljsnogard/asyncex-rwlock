@@ -11,19 +11,16 @@
 use pin_project::pin_project;
 use pin_utils::pin_mut;
 
-use atomex::TrCmpxchOrderings; 
 use abs_sync::{
     async_lock::{TrAcquire, TrReaderGuard, TrWriterGuard},
     cancellation::{TrCancellationToken, TrIntoFutureMayCancel},
     never_cancel::FutureForTaskNeverCancel as FutNonCancel,
-    x_deps::pin_utils,
 };
-use mm_ptr::x_deps::atomic_sync::x_deps::{abs_sync, atomex};
-
-use crate::rwlock::contexts_::CtxType;
+use asyncex_channel::x_deps::{abs_sync, atomex, pin_utils};
+use atomex::TrCmpxchOrderings; 
 
 use super::{
-    contexts_::Message,
+    contexts_::{CtxType, Message},
     impl_::*,
     reader_::ReaderGuard,
     upgrade_::{Upgrade, UpgradableReaderGuard},
@@ -84,13 +81,13 @@ where
     }
 }
 
-unsafe impl<'a, 'g, T, O> Send for WGuardCtx<'a, 'g, T, O>
+unsafe impl<T, O> Send for WGuardCtx<'_, '_, T, O>
 where
     T: Send + ?Sized,
     O: TrCmpxchOrderings,
 {}
 
-unsafe impl<'a, 'g, T, O> Sync for WGuardCtx<'a, 'g, T, O>
+unsafe impl<T, O> Sync for WGuardCtx<'_, '_, T, O>
 where
     T: Send + Sync + ?Sized,
     O: TrCmpxchOrderings,
@@ -301,7 +298,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> Drop for WriterGuard<'a, 'g, T, O>
+impl<T, O> Drop for WriterGuard<'_, '_, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,
@@ -311,7 +308,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> Deref for WriterGuard<'a, 'g, T, O>
+impl<T, O> Deref for WriterGuard<'_, '_, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,
@@ -323,7 +320,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> DerefMut for WriterGuard<'a, 'g, T, O>
+impl<T, O> DerefMut for WriterGuard<'_, '_, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,
@@ -360,7 +357,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> fmt::Debug for WriterGuard<'a, 'g, T, O>
+impl<T, O> fmt::Debug for WriterGuard<'_, '_, T, O>
 where
     T: fmt::Debug + ?Sized,
     O: TrCmpxchOrderings,
@@ -375,7 +372,7 @@ where
     }
 }
 
-impl<'a, 'g, T, O> fmt::Display for WriterGuard<'a, 'g, T, O>
+impl<T, O> fmt::Display for WriterGuard<'_, '_, T, O>
 where
     T: fmt::Display + ?Sized,
     O: TrCmpxchOrderings,
@@ -436,7 +433,7 @@ where
     }
 }
 
-impl<'l, 'a, T, O> IntoFuture for WriteAsync<'l, 'a, T, O>
+impl<'a, T, O> IntoFuture for WriteAsync<'_, 'a, T, O>
 where
     T: ?Sized,
     O: TrCmpxchOrderings,

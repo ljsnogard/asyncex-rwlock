@@ -4,20 +4,20 @@
     ptr,
     sync::Arc,
 };
-use async_channel::{self, Receiver, Sender};
+
 use pin_utils::pin_mut;
 
+use async_channel::{Receiver, Sender};
+
 use abs_sync::cancellation::{NonCancellableToken, TrCancellationToken};
+use asyncex_cancel::CancellationTokenSource;
+use asyncex_channel::{
+    self,
+    x_deps::{abs_sync, atomex, mm_ptr, pin_utils},
+};
 use atomex::StrictOrderings;
 use core_malloc::CoreAlloc;
-use mm_ptr::{
-    x_deps::atomic_sync::x_deps::{abs_sync, atomex},
-    Shared, XtMallocShared,
-};
-use crate::{
-    cancellation::CancellationTokenSource,
-    x_deps::pin_utils,
-};
+use mm_ptr::{Shared, XtMallocShared};
 
 use super::impl_::*;
 
@@ -111,26 +111,24 @@ async fn rwlock_light_weight_read_upg_smoke() {
     assert!(!rwlock.is_acquired());
 }
 
-async fn read_<Bc, Tc>(
+async fn read_<Tc>(
     step: usize,
     count: usize,
     rwlock: Shared<RwLock<usize>, TestAlloc>,
     sender: Sender<usize>,
-    mut cancel: Bc)
+    mut cancel: Pin<&mut Tc>)
 where
-    Bc: BorrowMut<Tc>,
     Tc: TrCancellationToken,
 {
     let mut i = 0usize;
     let acq = rwlock.acquire();
     pin_mut!(acq);
-    let mut tok = unsafe { Pin::new_unchecked(cancel.borrow_mut()) };
     // log::info!("read_ starts loop");
     loop {
         let Option::Some(reader) = acq
             .as_mut()
             .read_async()
-            .may_cancel_with(tok.as_mut())
+            .may_cancel_with(cancel.as_mut())
             .await
         else {
             break;
@@ -146,20 +144,18 @@ where
     }
 }
 
-async fn upgradable_read_<Bc, Tc>(
+async fn upgradable_read_<Tc>(
     rwlock: Shared<RwLock<usize>, TestAlloc>,
     recver: Receiver<usize>,
-    mut cancel: Bc)
+    mut cancel: Pin<&mut Tc>)
 where
-    Bc: BorrowMut<Tc>,
     Tc: TrCancellationToken,
 {
     // log::info!("upgradable_read_ starts loop");
     let acq = rwlock.acquire();
     pin_mut!(acq);
-    let tok_cloned = cancel.borrow().clone();
+    let tok_cloned = cancel.clone();
     pin_mut!(tok_cloned);
-    let mut tok = unsafe { Pin::new_unchecked(cancel.borrow_mut()) };
     loop {
         if recver.is_closed() {
             break;
@@ -168,7 +164,7 @@ where
         let Option::Some(upg_reader) = acq
             .as_mut()
             .upgradable_read_async()
-            .may_cancel_with(tok.as_mut())
+            .may_cancel_with(tok_cloned.as_mut())
             .await
         else {
             break;
@@ -179,7 +175,7 @@ where
             pin_mut!(upg);
             let Option::Some(mut writer) = upg
                 .upgrade_async()
-                .may_cancel_with(tok_cloned.as_mut())
+                .may_cancel_with(cancel.as_mut())
                 .await
             else {
                 break;
@@ -190,24 +186,22 @@ where
     }
 }
 
-async fn write_<Bc, Tc>(
+async fn write_<Tc>(
     count: usize,
     rwlock: Shared<RwLock<usize>, TestAlloc>,
-    mut cancel: Bc)
+    mut cancel: Pin<&mut Tc>)
 where
-    Bc: BorrowMut<Tc>,
     Tc: TrCancellationToken,
 {
     let mut i = 0usize;
     let acq = rwlock.acquire();
     pin_mut!(acq);
-    let mut tok = unsafe { Pin::new_unchecked(cancel.borrow_mut()) };
     // log::info!("write_ starts loop");
     loop {
         let Option::Some(mut writer) = acq
             .as_mut()
             .write_async()
-            .may_cancel_with(tok.as_mut())
+            .may_cancel_with(cancel.as_mut())
             .await
         else {
             break;
@@ -238,19 +232,19 @@ async fn rwlock_read_write_upgrade_smoke() {
     let writer_task = spawn(write_(
         WRITER_LOOP_COUNT,
         rwlock.clone(),
-        NonCancellableToken::new(),
+        NonCancellableToken::pinned(),
     ));
     let reader_task = spawn(read_(
         STEP,
         READER_LOOP_COUNT,
         rwlock.clone(),
         tx,
-        NonCancellableToken::new(),
+        NonCancellableToken::pinned(),
     ));
     let upg_reader_task = spawn(upgradable_read_(
         rwlock,
         rx,
-        NonCancellableToken::new(),
+        NonCancellableToken::pinned(),
     ));
 
     assert!(writer_task.await.is_ok());

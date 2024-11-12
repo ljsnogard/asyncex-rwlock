@@ -1,0 +1,24 @@
+[package]
+name = "asyncex-rwlock"
+version = "0.0.1"
+edition = "2021"
+
+authors = ["lino <lino_snsalias@outlook.com>"]
+description = "A queue based asynchronous reader-writer lock with no heap memory allocation for `no_std`"
+homepage = "https://github.com/ljsnogard/asyncex-rwlock"
+keywords = ["async", "rwlock"]
+categories = ["no-std"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+asyncex-channel = { git = "https://github.com/ljsnogard/asyncex-channel", tag = "0.0.1" }
+
+[dev-dependencies]
+core_malloc = { git = "https://github.com/ljsnogard/core_malloc.git", tag = "0.1.1" }
+futures-lite = { version = "2" }
+tokio = { version = "1", features = ["full"] }
+async-channel = { version = "2.3.*" }
+chrono = { version = "0.4.*" }
+log = { version = "0.4.*" }
+env_logger = { version = "0.11.*" }

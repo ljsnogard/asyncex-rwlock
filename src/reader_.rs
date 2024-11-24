@@ -10,13 +10,13 @@
 use pin_project::pin_project;
 use pin_utils::pin_mut;
 
-use asyncex_channel::x_deps::{abs_sync, atomex, pin_utils};
 use atomex::TrCmpxchOrderings; 
 use abs_sync::{
     async_lock::TrReaderGuard,
     cancellation::{TrCancellationToken, TrIntoFutureMayCancel},
     never_cancel::FutureForTaskNeverCancel as FutNonCancel,
 };
+use spmv_oneshot::x_deps::{abs_sync, atomex, pin_utils};
 
 use super::{
     contexts_::{CtxType, Message},

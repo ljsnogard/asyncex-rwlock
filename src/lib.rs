@@ -23,9 +23,9 @@ pub use writer_::{WriterGuard, WriteAsync, WriteFuture};
 #[cfg(test)]mod tests_;
 
 pub mod x_deps {
-    pub use asyncex_channel;
+    pub use spmv_oneshot;
 
-    pub use asyncex_channel::x_deps::{
-        abs_sync, atomex, atomic_sync, mm_ptr, pincol,
+    pub use spmv_oneshot::x_deps::{
+        abs_sync, atomex, atomic_sync, pincol,
     };
 }

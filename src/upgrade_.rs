@@ -18,8 +18,8 @@ use abs_sync::{
     },
     never_cancel::FutureForTaskNeverCancel as FutNonCancel,
 };
-use asyncex_channel::x_deps::{abs_sync, atomex, pin_utils};
 use atomex::TrCmpxchOrderings; 
+use spmv_oneshot::x_deps::{abs_sync, atomex, pin_utils};
 
 use super::{
     contexts_::*,

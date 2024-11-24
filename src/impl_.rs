@@ -11,12 +11,11 @@ use abs_sync::{
     async_lock::{TrAsyncRwLock, TrAcquire},
     cancellation::TrIntoFutureMayCancel,
 };
-use asyncex_channel::x_deps::{abs_sync, atomex, mm_ptr};
 use atomex::{
-    PhantomAtomicPtr, StrictOrderings,
+    CmpxchResult, PhantomAtomicPtr, StrictOrderings,
     TrAtomicData, TrAtomicFlags, TrCmpxchOrderings,
 };
-use mm_ptr::x_deps::atomex::CmpxchResult;
+use spmv_oneshot::x_deps::{abs_sync, atomex};
 
 use super::{
     contexts_::{CtxType, Message, WaitCtx, WakeList, WakeListGuard, WakeSlot},
@@ -964,7 +963,8 @@ pub(super) enum StateReport {
 
 #[cfg(test)]
 mod tests_ {
-    use mm_ptr::x_deps::atomex::StrictOrderings;
+    use atomex::StrictOrderings;
+    use spmv_oneshot::x_deps::atomex;
     use super::*;
 
     fn state_ref_from_lock_smoke_<T, O>(x: &RwLock<T, O>)

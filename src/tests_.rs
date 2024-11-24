@@ -11,13 +11,13 @@ use async_channel::{Receiver, Sender};
 
 use abs_sync::cancellation::{NonCancellableToken, TrCancellationToken};
 use asyncex_cancel::CancellationTokenSource;
-use asyncex_channel::{
-    self,
-    x_deps::{abs_sync, atomex, mm_ptr, pin_utils},
-};
 use atomex::StrictOrderings;
 use core_malloc::CoreAlloc;
 use mm_ptr::{Shared, XtMallocShared};
+use spmv_oneshot::{
+    self,
+    x_deps::{abs_sync, atomex, pin_utils},
+};
 
 use super::impl_::*;
 

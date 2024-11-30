@@ -214,11 +214,6 @@ where
 
     async fn read_async_(self: Pin<&mut Self>) -> <Self as Future>::Output {
         let this = self.project();
-        if true {
-            let acq_ref = this.acquire_.as_ref();
-            let init = acq_ref.try_init_slot_ctx_(CtxType::ReadOnly);
-            assert!(init);
-        }
         let mut acquire = unsafe {
             let ptr = this.acquire_.as_mut().get_unchecked_mut();
             NonNull::new_unchecked(ptr)
@@ -238,17 +233,26 @@ where
         let mut g = mutex.acquire().may_cancel_with(cancel.as_mut())?;
         let mut queue = (*g).as_mut();
         let mut tail = queue.as_mut().tail_mut();
-        let Option::Some(tail_cx) = tail.current_pinned() else {
-            unreachable!("[rwlock::ReadFuture::read_async_]")
-        };
-        let ctx_type = tail_cx.context_type();
-        if matches!(ctx_type, CtxType::Upgradable) {
-            let r = tail.insert_prev(slot.as_mut());
-            debug_assert!(r.is_ok());
-            debug_assert!(!slot.is_detached());
-        }
-        if slot.is_detached() {
-            let r = tail.insert_next(slot.as_mut());
+        if let Option::Some(tail_cx) = tail.current_pinned() {
+            let ctx_type = tail_cx.context_type();
+            // Special treatment that, readonly guard contenders should queue
+            // prior to the upgradable guard.
+            if matches!(ctx_type, CtxType::Upgradable) {
+                let r = tail.insert_prev(slot.as_mut());
+                debug_assert!(r.is_ok());
+                debug_assert!(!slot.is_detached());
+            }
+            // If the tail context is not queued for upgradable read, the slot
+            // will not be enqueued at the moment, we can simply enqueue after
+            // the tail.
+            if slot.is_detached() {
+                let r = tail.insert_next(slot.as_mut());
+                debug_assert!(r.is_ok());
+                debug_assert!(!slot.is_detached());
+            }
+        } else {
+            // The queue is empty.
+            let r = queue.as_mut().push_tail(slot.as_mut());
             debug_assert!(r.is_ok());
             debug_assert!(!slot.is_detached());
         }

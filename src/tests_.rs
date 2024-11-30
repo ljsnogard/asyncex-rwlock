@@ -16,7 +16,7 @@ use core_malloc::CoreAlloc;
 use mm_ptr::{Shared, XtMallocShared};
 use spmv_oneshot::{
     self,
-    x_deps::{abs_sync, atomex, pin_utils},
+    x_deps::{abs_sync, atomex, pin_utils}, Oneshot,
 };
 
 use super::impl_::*;
@@ -24,9 +24,8 @@ use super::impl_::*;
 type TestAlloc = CoreAlloc;
 
 fn init_env_logger_() {
-    let _ = env_logger::builder()
-        .is_test(true)
-        .try_init();
+    let r = env_logger::builder().is_test(true).try_init();
+    assert!(r.is_ok())
 }
 
 #[test]
@@ -50,7 +49,7 @@ fn rwlock_state_default_smoke() {
 
 /// Smoke test reader lock and upgradable reader lock without enqueued context
 #[tokio::test]
-async fn rwlock_light_weight_read_upg_smoke() {
+async fn rwlock_no_queue_read_upg_smoke() {
     init_env_logger_();
 
     log::trace!("[rwlock_light_weight_read_upg_smoke]");
@@ -216,7 +215,7 @@ where
 }
 
 #[tokio::test]
-async fn rwlock_read_write_upgrade_smoke() {
+async fn rwlock_read_write_upgrade_async_smoke() {
     use tokio::task::spawn as spawn;
 
     init_env_logger_();
@@ -298,28 +297,38 @@ async fn writer_guard_downgrade_to_upgradable_should_work() {
     let rwlock = RwLock::<_, StrictOrderings>::new(1);
     let acq1 = rwlock.acquire();
     pin_mut!(acq1);
-
+    // Acquire a WriterGuard and increase the number by 1
     let mut writer = acq1.write_async().await;
     *writer += 1;
 
     let acq2 = rwlock.acquire();
     pin_mut!(acq2);
+
+    // The WriterGuard is not released, `try_read` SHOULD return `None`
     assert!(acq2.as_mut().try_read().is_none());
 
-    let reader = writer.downgrade_to_upgradable();
-    assert_eq!(*reader, 2);
-    let upg = reader.upgrade();
+    let upgradable = writer.downgrade_to_upgradable();
+
+    // Make sure the upgradable can read the correct value
+    assert_eq!(*upgradable, 2);
+    let upg = upgradable.upgrade();
     pin_mut!(upg);
 
+    // The UpgradableReaderGuard still alive, `try_write` SHOULD return `None``
     assert!(acq2.as_mut().try_write().is_none());
+
+    // The UpgradableReaderGuard still alive, with no other enqueued contenders,
+    // `try_read` SHOULD return `Some`
     assert!(acq2.as_mut().try_read().is_some());
+
+    // 上一行获取读锁成功后马上释放，因此可升级锁升级为写锁的尝试，应该成功
     assert!(upg.try_upgrade().is_some());
 }
 
-/// # 测试目标
+/// ## 测试目标
 /// `CancellationToken` 触发时，能否顺利取消已排队的读锁请求，并顺利启动后续的写锁请求
 /// 
-/// # 测试步骤
+/// ## 测试步骤
 /// 1. 启动一个获取写锁并一直持有该写锁的任务，该任务会在收到一个释放信号后才结束;
 /// 2. 启动一个尝试获取读锁的任务，该任务在获得读锁或者从 `CancellationToken` 接收到取消
 /// 信号后才结束;
@@ -439,10 +448,14 @@ async fn cancelling_enqueued_reader_should_wake_following_queued_writer() {
     assert_eq!(held_signal, 0usize);
 
     // 2
-    let reader_cts = CancellationTokenSource::new_in(
-        TestAlloc::default(),
-        StrictOrderings::default,
-    );
+    let reader_cts = CancellationTokenSource::try_new(
+        Shared::new(
+            Oneshot::<(), StrictOrderings>::new(),
+            TestAlloc::new(),
+        ),
+        Shared::strong_count,
+        Shared::weak_count,
+    ).unwrap();
     let reader_cancel = reader_cts.child_token();
     assert!(!reader_cancel.is_cancelled());
     let rwlock_cloned = rwlock.clone();
@@ -462,10 +475,14 @@ async fn cancelling_enqueued_reader_should_wake_following_queued_writer() {
     assert!(exit_signal2_recv.try_recv().is_err());
 
     // 3
-    let follower_cts = CancellationTokenSource::new_in(
-        TestAlloc::default(),
-        StrictOrderings::default,
-    );
+    let follower_cts = CancellationTokenSource::try_new(
+        Shared::new(
+            Oneshot::<(), StrictOrderings>::new(),
+            TestAlloc::new(),
+        ),
+        Shared::strong_count,
+        Shared::weak_count,
+    ).unwrap();
     let follower_cancel = follower_cts.child_token();
     let rwlock_cloned = rwlock.clone();
     let (start_signal_send, start_signal_recv) = async_channel::bounded::<()>(1);

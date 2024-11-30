@@ -110,6 +110,10 @@ where
         matches!(x, Result::Ok(Option::None))
     }
 
+    pub fn swap_slot_ctx_type(&self, ctx_type: CtxType) -> CtxType {
+        self.cx_stat_.swap_slot_ctx_type(ctx_type)
+    }
+
     #[inline]
     pub fn try_init_context_type(&self, ctx_type: CtxType) -> bool {
         self.cx_stat_.try_init_context_type(ctx_type)
@@ -138,6 +142,7 @@ where
     pub fn try_mark_ctx_upgraded(&self) -> CmpxchResult<StVal> {
         self.cx_stat_.try_mark_ctx_upgraded()
     }
+    #[allow(dead_code)]
     #[inline]
     pub fn is_upgraded_writer_ctx(&self) -> bool {
         let s = self.cx_stat_.value();
@@ -317,6 +322,19 @@ impl<O: TrCmpxchOrderings> CtxState<O> {
     }
 
     #[inline]
+    pub fn swap_slot_ctx_type(&self, ctx_type: CtxType) -> CtxType {
+        let partial_flag: StVal = CtxStConf::make_flag_ctx_type(ctx_type);
+        let expect = |_| true;
+        let desire = |s|
+            s & (!CtxStConf::K_CTX_TYPE_MASK) | partial_flag;
+        let s = self
+            .try_spin_compare_exchange_weak(expect, desire)
+            .into_inner();
+        CtxType::try_from_st_val(CtxStConf::load_flag_ctx_type(s))
+            .unwrap()
+    }
+
+    #[inline]
     pub fn try_init_context_type(&self, ctx_type: CtxType) -> bool {
         let partial_flag: StVal = CtxStConf::make_flag_ctx_type(ctx_type);
         let desire = |s| s & (!CtxStConf::K_CTX_TYPE_MASK) | partial_flag;
@@ -452,7 +470,7 @@ mod tests_ {
         let upgradable_flags = CtxStConf::make_flag_ctx_type(CtxType::Upgradable);
         let upgradable = CtxType
             ::try_from_st_val(CtxStConf::load_flag_ctx_type(upgradable_flags))
-            .expect("");
+            .unwrap();
         assert_eq!(CtxType::Upgradable, upgradable);
 
         assert!(CtxStConf::expect_ctx_type_readonly(

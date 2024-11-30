@@ -244,6 +244,8 @@ where
             WGuardCtx::Upg(upg) => from_upg_(upg),
         };
 
+        /// When a WriterGuard is gained from `Acquire`, concurrent racers may
+        /// or may not enqueue and wait for the lock. 
         fn from_acq_<'acq, 'guard, TRes, TOrd>(
             acq: &mut Pin<&mut Acquire<'acq, TRes, TOrd>>,
         ) -> UpgradableReaderGuard<'acq, 'guard, TRes, TOrd>
@@ -270,6 +272,7 @@ where
             })
         }
 
+        /// When a WriterGuard is gained from `Upgrade`,
         fn from_upg_<'acq, 'guard, TRes, TOrd>(
             upg: &mut NonNull<Upgrade<'acq, 'guard, TRes, TOrd>>
         ) -> UpgradableReaderGuard<'acq, 'guard, TRes, TOrd>

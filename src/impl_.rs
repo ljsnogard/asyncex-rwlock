@@ -281,24 +281,24 @@ where
         unsafe { self.get_unchecked_mut().try_upgradable_read_() }
     }
 
-    #[inline]
     pub fn read_async(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
     ) -> ReadAsync<'a, '_, T, O> {
+        self.as_mut().init_slot_(CtxType::ReadOnly);
         ReadAsync::new(self)
     }
 
-    #[inline]
     pub fn write_async(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
     ) -> WriteAsync<'a, '_, T, O> {
+        self.as_mut().init_slot_(CtxType::Exclusive);
         WriteAsync::new(self)
     }
 
-    #[inline]
     pub fn upgradable_read_async(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
     ) -> UpgradableReadAsync<'a, '_, T, O> {
+        self.as_mut().init_slot_(CtxType::Upgradable);
         UpgradableReadAsync::new(self)
     }
 }
@@ -319,6 +319,32 @@ where
             let slot = &mut self.get_unchecked_mut().ctx_slot_;
             Pin::new_unchecked(slot)
         }
+    }
+
+    fn init_slot_(
+        mut self: Pin<&mut Self>,
+        ctx_type: CtxType,
+    ) {
+        let mut this_ptr = unsafe {
+            NonNull::new_unchecked(self.as_mut().get_unchecked_mut())
+        };
+        let this = self.as_ref().get_ref();
+        let _ = this.swap_slot_ctx_type(ctx_type);
+        let slot = this.slot_();
+        let Option::Some(q) = slot.attached_list() else {
+            return;
+        };
+        let mutex = q.mutex();
+        let slot = unsafe {
+            let this_pin = Pin::new_unchecked(this_ptr.as_mut());
+            this_pin.slot_pinned_()
+        };
+        let mut g = mutex.acquire().wait();
+        let Option::Some(mut cursor) = (*g).as_mut().find(slot) else {
+            unreachable!()
+        };
+        let x = cursor.try_detach();
+        assert!(x)
     }
 
     pub(super) fn deref_impl(&self) -> &T {
@@ -420,7 +446,7 @@ where
         }
     }
 
-    pub(super) fn try_downgrade_exclusive_to_readonly_(
+    pub(super) fn try_spin_update_rwstate_from_exclusive_to_readonly_(
         &self,
     ) -> CmpxchResult<RwStVal> {
         let expect = |s|
@@ -435,9 +461,37 @@ where
         self.rwlock().state().try_spin_compare_exchange_weak(expect, desire)
     }
 
+    pub(super) fn try_spin_update_rwstate_from_exclusive_to_upgradable_(
+        &self,
+    ) -> CmpxchResult<RwStVal> {
+        let expect = |s|
+            RwLockState::<O>::expect_writer_acquired(s) &&
+            RwLockState::<O>::expect_inc_reader_count_valid(s) &&
+            RwLockState::<O>::expect_upgrade_inactive(s) &&
+            RwLockState::<O>::expect_queue_empty(s);
+        let desire = |s| {
+            let s1 = RwLockState::<O>::desire_writer_not_acquired(s);
+            let s2 = RwLockState::<O>::desire_upgrade_active(s1);
+            RwLockState::<O>::desire_reader_count_incr(s2)
+        };
+        self.rwlock().state().try_spin_compare_exchange_weak(expect, desire)
+    }
+
     #[inline]
-    pub(super) fn try_init_slot_ctx_(&self, ctx_type: CtxType) -> bool {
+    pub(super) fn swap_slot_ctx_type(&self, ctx_type: CtxType) -> CtxType {
+        self.slot_().data().swap_slot_ctx_type(ctx_type)
+    }
+
+    #[allow(dead_code)]
+    #[inline]
+    pub(super) fn try_init_slot_ctx_type_(&self, ctx_type: CtxType) -> bool {
         self.slot_().data().try_init_context_type(ctx_type)
+    }
+
+    #[allow(dead_code)]
+    #[inline]
+    pub(super) fn try_reset_slot_ctx_type_(&self) -> bool {
+        self.slot_().data().try_reset_context_type()
     }
 
     pub(super) fn invalidate_slot_ctx_(slot: &WakeSlot<O>) {
@@ -619,7 +673,9 @@ where
             let r = (*g).as_mut().push_head(slot);
             debug_assert!(r.is_ok());
             let mut acq_pin = unsafe { Pin::new_unchecked(acq.as_mut()) };
-            let r = acq_pin.as_mut().try_downgrade_exclusive_to_readonly_();
+            let r = acq_pin
+                .as_mut()
+                .try_spin_update_rwstate_from_exclusive_to_readonly_();
             assert!(r.is_succ());
             acq_pin.on_writer_guard_drop_with_list_guard_(&mut g)
         };
@@ -632,6 +688,8 @@ where
         let mut acq_pin = unsafe { Pin::new_unchecked(acq.as_mut()) };
         let slot = acq_pin.as_mut().slot_pinned_();
         if let Option::Some(list) = slot.attached_list() {
+            // If the writer context has enqueued, it is by-design that the
+            // the head slot of the queue is the writer context of `self`
             debug_assert!({
                 let mutex = list.mutex();
                 let mut g = mutex.acquire().wait();
@@ -642,31 +700,43 @@ where
             let head_cx = slot.data();
             let r = head_cx.try_downgrade_exclusive_to_upgradable();
             debug_assert!(r);
-        } else {
-            let acq_pin = unsafe { Pin::new_unchecked(acq.as_mut()) };
-            let rwlock =  unsafe { acq.as_ref().rwlock() };
-            let mutex = rwlock.queue().mutex();
-            let mut g = mutex.acquire().wait();
-            let r = (*g).as_mut().push_head(slot);
-            debug_assert!(r.is_ok());
-            acq_pin.on_writer_guard_drop_with_list_guard_(&mut g);
-
-            let expect = |_| true;
-            let desire = |s| {
-                let s1 = RwLockState::<O>::desire_writer_not_acquired(s);
-                let s2 = RwLockState::<O>::desire_queue_not_empty(s1);
-                RwLockState::<O>::desire_upgrade_inactive(s2)
-            };
-            let r = rwlock
-                .state()
-                .try_spin_compare_exchange_weak(expect, desire);
-            if !r.is_succ() {
-                #[allow(unused)]
-                let v = r.into_inner();
-                #[cfg(test)]
-                log::warn!("[Acquire::downgrade_writer_to_upgradable_] {v:x}");
-            }
+            return;
         };
+        // If the writer context has not yet enqueued, while other contenders 
+        // may be trying to acquire the rwlock, we first try not to enqueue
+        // another context.
+        let acq_pin = unsafe { Pin::new_unchecked(acq.as_mut()) };
+        let try_st = acq_pin.try_spin_update_rwstate_from_exclusive_to_upgradable_();
+        let CmpxchResult::Unexpected(s) = try_st else {
+            return;
+        };
+        debug_assert!(RwLockState::<O>::expect_queue_not_empty(s));
+        // Since the quick path failed, we now must push a upgradable context
+        // into the front of the queue.
+        let rwlock =  unsafe { acq.as_ref().rwlock() };
+        let mutex = rwlock.queue().mutex();
+        let mut g = mutex.acquire().wait();
+        let r = (*g).as_mut().push_head(slot);
+        debug_assert!(r.is_ok());
+        acq_pin.on_writer_guard_drop_with_list_guard_(&mut g);
+
+        let expect = |_| true;
+        let desire = |s| {
+            // This is neccessary to tell other contenders.
+            let s1 = RwLockState::<O>::desire_writer_not_acquired(s);
+            // This is neccessary because we have decided to enqueue the ctx.
+            let s2 = RwLockState::<O>::desire_upgrade_inactive(s1);
+            RwLockState::<O>::desire_queue_not_empty(s2)
+        };
+        #[allow(unused)]
+        let r = rwlock
+            .state()
+            .try_spin_compare_exchange_weak(expect, desire);
+        #[cfg(test)]
+        if !r.is_succ() {
+            let v = r.into_inner();
+            log::warn!("[Acquire::downgrade_writer_to_upgradable_] {v:x}");
+        }
     }
 }
 
@@ -762,8 +832,8 @@ type RwStCell = <RwStVal as TrAtomicData>::AtomicCell;
 
 /// An atomic state to accelerate the information report of RwLock wait queue.
 ///
-/// With the most significant two bits reserved for flags,
-/// the rest less significant bits are for non-queued readers count.
+/// With the most significant 3 bits reserved for flags,
+/// the rest bits are for non-queued readers count.
 #[derive(Debug)]
 pub(super) struct RwLockState<O: TrCmpxchOrderings>(
     RwStCell,
@@ -772,8 +842,14 @@ pub(super) struct RwLockState<O: TrCmpxchOrderings>(
 
 const K_NOT_LOCKED: RwStVal = 0;
 const K_QUEUE_NOT_EMPTY: RwStVal = 1 << (RwStVal::BITS - 1);
+
+/// Indicating an `WriterGuard` is alive even though the queue is empty.
 const K_WRITER_ACQUIRED: RwStVal = K_QUEUE_NOT_EMPTY >> 1;
+
+/// Indicating an `UpgradableGuard` is alive even though the queue is empty.
 const K_UPGRADE_ACTIVE: RwStVal = K_WRITER_ACQUIRED >> 1;
+
+/// The max count of concurrent readers.
 const K_MAX_READER_COUNT: RwStVal = K_UPGRADE_ACTIVE - 1;
 
 impl<O: TrCmpxchOrderings> RwLockState<O> {
@@ -785,6 +861,7 @@ impl<O: TrCmpxchOrderings> RwLockState<O> {
     const fn expect_lock_acquired(s: RwStVal) -> bool {
         s != K_NOT_LOCKED
     }
+    #[allow(dead_code)]
     #[inline]
     const fn expect_lock_released(s: RwStVal) -> bool {
         s == K_NOT_LOCKED

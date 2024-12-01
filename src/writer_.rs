@@ -17,13 +17,15 @@ use abs_sync::{
     never_cancel::FutureForTaskNeverCancel as FutNonCancel,
 };
 use atomex::TrCmpxchOrderings; 
-use spmv_oneshot::x_deps::{abs_sync, atomex, pin_utils};
+use pincol::x_deps::{abs_sync, atomex, pin_utils};
 
 use super::{
-    contexts_::{CtxType, Message},
-    impl_::*,
+    acquire_::Acquire,
+    contexts_::{init_slot, CtxType},
+    rwlock_::RwLock,
     reader_::ReaderGuard,
-    upgrade_::{Upgrade, UpgradableReaderGuard},
+    upgradable_::UpgradableReaderGuard,
+    upgrade_::Upgrade,
 };
 
 enum WGuardCtx<'a, 'g, T, O>
@@ -400,8 +402,8 @@ where
     T: ?Sized,
     O: TrCmpxchOrderings,
 {
-    pub fn new(acquire: Pin<&'a mut Acquire<'l, T, O>>) -> Self {
-        let _ = acquire.slot_().data().try_reset_context_type();
+    pub fn new(mut acquire: Pin<&'a mut Acquire<'l, T, O>>) -> Self {
+        init_slot(acquire.as_mut(), CtxType::Exclusive);
         WriteAsync(acquire)
     }
 
@@ -476,51 +478,6 @@ where
             cancel_: cancel,
         }
     }
-
-    async fn write_async_(self: Pin<&mut Self>) -> <Self as Future>::Output {
-        let this = self.project();
-        let mut acquire = unsafe {
-            let ptr = this.acquire_.as_mut().get_unchecked_mut();
-            NonNull::new_unchecked(ptr)
-        };
-        let try_write = unsafe { acquire.as_mut().try_write_() };
-        if try_write.is_some() {
-            return try_write;
-        };
-        let mut cancel = this.cancel_.as_mut();
-        let mut slot = this.acquire_.as_mut().slot_pinned_();
-        debug_assert!(slot.is_detached());
-
-        let mutex = unsafe {
-            // Safe because the rwlock queue mutex is thread-safe
-            acquire.as_ref().rwlock().queue().mutex()
-        };
-        let mut g = mutex.acquire().may_cancel_with(cancel.as_mut())?;
-        let queue = (*g).as_mut();
-        let r = queue.push_tail(slot.as_mut());
-        debug_assert!(r.is_ok());
-
-        let s = unsafe { acquire.as_ref().rwlock().state() };
-        let _ = s.try_set_queue_not_empty();
-        drop(g);
-
-        let curr_cx = slot.data();
-        let peeker = curr_cx.channel().peeker();
-        pin_mut!(peeker);
-        let msg = peeker
-            .peek_async()
-            .may_cancel_with(cancel)
-            .await;
-        if let Result::Ok(Message::Ready) = msg {
-            let acquire = unsafe {
-                // Use unsafe here to get a `WriterGuard` with proper lifetime
-                Pin::new_unchecked(acquire.as_mut())
-            };
-            Option::Some(WriterGuard::from_acquire(acquire))
-        } else {
-            Option::None
-        }
-    }
 }
 
 impl<'l, 'a, C, T, O> Future for WriteFuture<'l, 'a, C, T, O>
@@ -532,8 +489,70 @@ where
     type Output = Option<WriterGuard<'l, 'a, T, O>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let f = self.write_async_();
-        pin_mut!(f);
-        f.poll(cx)
+        let this = self.project();
+        let mut acquire = unsafe {
+            let ptr = this.acquire_.as_mut().get_unchecked_mut();
+            NonNull::new_unchecked(ptr)
+        };
+        let mut cancel = this.cancel_.as_mut();
+        let mut slot_ptr = unsafe {
+            let slot_pin = this.acquire_.as_mut().slot_pinned_();
+            NonNull::new_unchecked(slot_pin.get_unchecked_mut())
+        };
+        loop {
+            let slot_ref = unsafe { slot_ptr.as_ref() };
+            if let Option::Some(q) = slot_ref.attached_list() {
+                let fut_can = cancel.as_mut().cancellation().into_future();
+                pin_mut!(fut_can);
+                if fut_can.poll(cx).is_ready() {
+                    let mutex = q.mutex();
+                    let mut g = mutex.acquire().wait();
+                    let mut q = (*g).as_mut();
+                    let slot_pin = unsafe {
+                        Pin::new_unchecked(slot_ptr.as_mut())
+                    };
+                    let Option::Some(mut cursor) = q.as_mut().find(slot_pin)
+                    else {
+                        unreachable!();
+                    };
+                    let detach_succ = cursor.try_detach();
+                    if detach_succ && q.is_empty() {
+                        let acq_ref = unsafe { acquire.as_ref() };
+                        let _ = acq_ref.rwlock().state().try_set_queue_empty();
+                    }
+                    drop(g);
+                    return Poll::Ready(Option::None);
+                }
+                return Poll::Pending;
+            } else {
+                // First we try the fast path that will not enqueue the slot.
+                let try_write = unsafe { acquire.as_mut().try_write_() };
+                if try_write.is_some() {
+                    return Poll::Ready(try_write);
+                };
+                // Since fast path failed, we have to enqueue the slot
+                let mutex = unsafe {
+                    // Safe because the rwlock queue mutex is thread-safe
+                    acquire.as_ref().rwlock().queue().mutex()
+                };
+                let opt_q_guard = mutex
+                    .acquire()
+                    .may_cancel_with(cancel.as_mut());
+                let Option::Some(mut g) = opt_q_guard
+                else {
+                    return Poll::Ready(Option::None);
+                };
+                let queue = (*g).as_mut();
+                let mut slot = unsafe {
+                    Pin::new_unchecked(slot_ptr.as_mut())
+                };
+                let r = queue.push_tail(slot.as_mut());
+                debug_assert!(r.is_ok());
+
+                let s = unsafe { acquire.as_ref().rwlock().state() };
+                let _ = s.try_set_queue_not_empty();
+                drop(g);
+            }
+        }
     }
 }

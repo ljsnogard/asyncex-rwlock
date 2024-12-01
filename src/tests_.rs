@@ -5,9 +5,8 @@
     sync::Arc,
 };
 
-use pin_utils::pin_mut;
-
 use async_channel::{Receiver, Sender};
+use pin_utils::pin_mut;
 
 use abs_sync::cancellation::{NonCancellableToken, TrCancellationToken};
 use asyncex_cancel::CancellationTokenSource;
@@ -19,7 +18,7 @@ use spmv_oneshot::{
     x_deps::{abs_sync, atomex, pin_utils}, Oneshot,
 };
 
-use super::impl_::*;
+use super::rwlock_::*;
 
 type TestAlloc = CoreAlloc;
 

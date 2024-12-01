@@ -6,26 +6,27 @@
 
 #[cfg(test)]extern crate std;
 
+mod acquire_;
 mod contexts_;
-mod impl_;
+mod rwlock_;
 mod reader_;
 mod writer_;
+mod upgradable_;
 mod upgrade_;
 
-pub use impl_::{Acquire, RwLock};
+pub use acquire_::Acquire;
+pub use rwlock_::RwLock;
 pub use reader_::{ReaderGuard, ReadAsync, ReadFuture};
-pub use upgrade_::{
+pub use upgradable_::{
     UpgradableReaderGuard, UpgradableReadAsync, UpgradableReadFuture,
-    Upgrade, UpgradeAsync, UpgradeFuture,
 };
+pub use upgrade_::{Upgrade, UpgradeAsync, UpgradeFuture};
 pub use writer_::{WriterGuard, WriteAsync, WriteFuture};
 
 #[cfg(test)]mod tests_;
 
 pub mod x_deps {
-    pub use spmv_oneshot;
+    pub use pincol;
 
-    pub use spmv_oneshot::x_deps::{
-        abs_sync, atomex, atomic_sync, pincol,
-    };
+    pub use pincol::x_deps::{abs_sync, atomex, atomic_sync};
 }

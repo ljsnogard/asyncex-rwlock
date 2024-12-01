@@ -1,14 +1,51 @@
 ﻿use core::{
     fmt,
     marker::{PhantomData, PhantomPinned},
+    pin::Pin,
+    ptr::NonNull,
     sync::atomic::AtomicUsize,
+    task::Waker,
 };
 
 use atomex::{CmpxchResult, StrictOrderings, TrAtomicFlags, TrCmpxchOrderings};
-use pincol::linked_list::{PinnedList, PinnedListGuard, PinnedSlot};
-use spmv_oneshot::{x_deps::{atomex, pincol}, Oneshot};
+use pincol::{
+    linked_list::{PinnedList, PinnedListGuard, PinnedSlot},
+    x_deps::atomex,
+};
 
 type StVal = usize;
+
+pub(super) trait AsPinnedMut<T: ?Sized> {
+    fn as_pinned_mut(self: Pin<&mut Self>) -> Pin<&mut T>;
+}
+
+pub(super) fn init_slot<X, O>(
+    mut x: Pin<&mut X>,
+    ctx_type: CtxType)
+where
+    X: AsPinnedMut<WakeSlot<O>>,
+    O: TrCmpxchOrderings,
+{
+    let mut this_ptr = unsafe {
+        NonNull::new_unchecked(x.as_mut().get_unchecked_mut())
+    };
+    let slot_pin = x.as_pinned_mut();
+    let _ = slot_pin.data().swap_slot_ctx_type(ctx_type);
+    let Option::Some(q) = slot_pin.attached_list() else {
+        return;
+    };
+    let mutex = q.mutex();
+    let slot = unsafe {
+        let this_pin = Pin::new_unchecked(this_ptr.as_mut());
+        this_pin.as_pinned_mut()
+    };
+    let mut g = mutex.acquire().wait();
+    let Option::Some(mut cursor) = (*g).as_mut().find(slot) else {
+        unreachable!()
+    };
+    let x = cursor.try_detach();
+    assert!(x)
+}
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -61,26 +98,18 @@ impl fmt::Display for CtxType {
     }
 }
 
-pub(super) type Channel<O> = Oneshot<Message, O>;
 pub(super) type WakeSlot<O> = PinnedSlot<WaitCtx<O>, O>;
 pub(super) type WakeList<O> = PinnedList<WaitCtx<O>, O>;
 pub(super) type WakeListGuard<'a, 'g, O> = PinnedListGuard<'a, 'g, WaitCtx<O>, O>;
-
-#[derive(Debug, Clone, Copy)]
-pub(super) enum Message {
-    Ready,
-    Cancel,
-}
 
 pub(super) struct WaitCtx<O>
 where
     O: TrCmpxchOrderings,
 {
-    _marker_: PhantomPinned,
+    _pinned_: PhantomPinned,
     /// The state of the wait context, including `CtxType`
-    cx_stat_: CtxState<O>,
-    /// An CtxType::Exclusive ctx should have only 1 signal.
-    channel_: Channel<O>,
+    ctx_state_: CtxState<O>,
+    opt_waker_: Option<Waker>,
 }
 
 impl<O> WaitCtx<O>
@@ -89,95 +118,61 @@ where
 {
     pub const fn new() -> Self {
         WaitCtx {
-            _marker_: PhantomPinned,
-            cx_stat_: CtxState::new(),
-            channel_: Channel::new(),
+            _pinned_: PhantomPinned,
+            ctx_state_: CtxState::new(),
+            opt_waker_: Option::None,
         }
-    }
-
-    pub fn channel(&self) -> &Channel<O> {
-        &self.channel_
     }
 
     #[inline]
     pub fn context_type(&self) -> CtxType {
-        self.cx_stat_.context_type()
+        self.ctx_state_.context_type()
     }
 
-    #[inline]
-    pub fn can_signal(&self) -> bool {
-        let x = self.channel_.try_peek();
-        matches!(x, Result::Ok(Option::None))
+    pub fn try_signal(self: Pin<&mut Self>) -> bool {
+        let this_mut = unsafe { self.get_unchecked_mut() };
+        if this_mut.ctx_state_.is_invalidated() {
+            return false;
+        }
+        let Option::Some(waker) = this_mut.opt_waker_.take()
+        else {
+            return false;
+        };
+        waker.wake();
+        true
     }
 
     pub fn swap_slot_ctx_type(&self, ctx_type: CtxType) -> CtxType {
-        self.cx_stat_.swap_slot_ctx_type(ctx_type)
-    }
-
-    #[inline]
-    pub fn try_init_context_type(&self, ctx_type: CtxType) -> bool {
-        self.cx_stat_.try_init_context_type(ctx_type)
-    }
-
-    #[inline]
-    pub fn try_reset_context_type(&self) -> bool {
-        self.cx_stat_.try_reset_context_type()
+        self.ctx_state_.swap_slot_ctx_type(ctx_type)
     }
 
     pub fn try_invalidate(&self) -> CmpxchResult<StVal> {
-        #[cfg(test)]log::trace!("{self:?}");
-        self.cx_stat_.try_invalidate()
+        #[cfg(test)]log::trace!("[WaitCtx::try_invalidate] {self:?}");
+        self.ctx_state_.try_invalidate()
     }
     pub fn try_validate(&self) -> CmpxchResult<StVal> {
         #[cfg(test)]log::trace!("{self:?}");
-        self.cx_stat_.try_validate()
+        self.ctx_state_.try_validate()
     }
 
     #[inline]
     pub fn is_invalidated(&self) -> bool {
-        self.cx_stat_.is_invalidated()
-    }
-
-    #[inline]
-    pub fn try_mark_ctx_upgraded(&self) -> CmpxchResult<StVal> {
-        self.cx_stat_.try_mark_ctx_upgraded()
-    }
-    #[allow(dead_code)]
-    #[inline]
-    pub fn is_upgraded_writer_ctx(&self) -> bool {
-        let s = self.cx_stat_.value();
-        let u = CtxStConf::load_flag_ctx_type(s);
-        let Result::Ok(t) = CtxType::try_from_st_val(u) else {
-            return false;
-        };
-        CtxStConf::expect_ctx_upgraded(s) && matches!(t, CtxType::Exclusive)
-    }
-
-    #[inline]
-    pub fn try_set_ctx_cancelled(&self) -> bool {
-        self.channel_.try_send(Message::Cancel).is_ok()
-    }
-
-    /// Update the context state from `ReadOnly` to `Upgradable`
-    #[allow(dead_code)]
-    #[inline]
-    pub fn try_upgrade_to_upgradable(&self) -> bool {
-        self.cx_stat_.try_upgrade_to_upgradable()
+        self.ctx_state_.is_invalidated()
     }
 
     #[inline]
     pub fn try_downgrade_upgradable_to_readonly(&self) -> bool {
-        self.cx_stat_.try_downgrade_upgradable_to_readonly()
+        self.ctx_state_.try_downgrade_upgradable_to_readonly()
     }
 
     #[inline]
     pub fn try_downgrade_exclusive_to_readonly(&self) -> bool {
-        self.cx_stat_.try_downgrade_exclusive_to_readonly()
+        self.ctx_state_.try_downgrade_exclusive_to_readonly()
     }
 
     #[inline]
     pub fn try_downgrade_exclusive_to_upgradable(&self) -> bool {
-        self.cx_stat_.try_downgrade_exclusive_to_upgradable()
+        self.ctx_state_.try_downgrade_exclusive_to_upgradable()
     }
 }
 
@@ -186,7 +181,7 @@ where
     O: TrCmpxchOrderings,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = self.cx_stat_.value();
+        let s = self.ctx_state_.value();
         let v = CtxStConf::load_flag_ctx_type(s);
         let t = CtxType::try_from_st_val(v).unwrap();
         let c = CtxStConf::load_reader_count(s);
@@ -211,19 +206,19 @@ impl CtxStConf {
     // The WaitCtx is invalidated and pending for detach
     const K_CTX_INVALID_FLAG: StVal = 1 << (StVal::BITS - 3);
 
-    // The WaitCtx is Exclusive and was upgrgaded from Upgradable
-    const K_CTX_UPGRADE_FLAG: StVal = Self::K_CTX_INVALID_FLAG >> 1;
+    const K_USE_COUNT_MASK: StVal = Self::K_CTX_INVALID_FLAG - 1;
 
-    const K_USE_COUNT_MASK: StVal = Self::K_CTX_UPGRADE_FLAG - 1;
-
+    #[allow(dead_code)]
     const fn expect_ctx_type_uninit(s: StVal) -> bool {
         let r = CtxType::try_from_st_val(Self::load_flag_ctx_type(s));
         let Result::Ok(t) = r else { return false; };
         matches!(t, CtxType::Uninit)
     }
+    #[allow(dead_code)]
     const fn expect_ctx_type_initialized(s: StVal) -> bool {
         !Self::expect_ctx_type_uninit(s)
     }
+    #[allow(dead_code)]
     const fn expect_ctx_type_readonly(s: StVal) -> bool {
         let r = CtxType::try_from_st_val(Self::load_flag_ctx_type(s));
         let Result::Ok(t) = r else { return false; };
@@ -249,6 +244,7 @@ impl CtxStConf {
             CtxStConf::make_flag_ctx_type(CtxType::ReadOnly);
         s & (!Self::K_CTX_TYPE_MASK) | READONLY_FLAG
     }
+    #[allow(dead_code)]
     const fn desire_ctx_type_uninit(s: StVal) -> StVal {
         const UNINIT_FLAG: StVal =
             CtxStConf::make_flag_ctx_type(CtxType::Uninit);
@@ -272,16 +268,6 @@ impl CtxStConf {
     }
     const fn desire_valid(s: StVal) -> StVal {
         s & (!Self::K_CTX_INVALID_FLAG)
-    }
-
-    const fn expect_ctx_upgraded(s: StVal) -> bool {
-        s & Self::K_CTX_UPGRADE_FLAG == Self::K_CTX_UPGRADE_FLAG
-    }
-    const fn expect_ctx_non_upgraded(s: StVal) -> bool {
-        !Self::expect_ctx_upgraded(s)
-    }
-    const fn desire_ctx_upgraded(s: StVal) -> StVal {
-        s | Self::K_CTX_UPGRADE_FLAG
     }
 
     const fn load_reader_count(s: StVal) -> StVal {
@@ -335,24 +321,6 @@ impl<O: TrCmpxchOrderings> CtxState<O> {
     }
 
     #[inline]
-    pub fn try_init_context_type(&self, ctx_type: CtxType) -> bool {
-        let partial_flag: StVal = CtxStConf::make_flag_ctx_type(ctx_type);
-        let desire = |s| s & (!CtxStConf::K_CTX_TYPE_MASK) | partial_flag;
-        self.try_spin_compare_exchange_weak(
-                CtxStConf::expect_ctx_type_uninit,
-                desire)
-            .is_succ()
-    }
-
-    #[inline]
-    pub fn try_reset_context_type(&self) -> bool {
-        self.try_spin_compare_exchange_weak(
-                CtxStConf::expect_ctx_type_initialized,
-                CtxStConf::desire_ctx_type_uninit)
-            .is_succ()
-    }
-
-    #[inline]
     pub fn context_type(&self) -> CtxType {
         let u = CtxStConf::load_flag_ctx_type(self.value());
         let Result::Ok(t) = CtxType::try_from_st_val(u) else {
@@ -379,13 +347,7 @@ impl<O: TrCmpxchOrderings> CtxState<O> {
         self.try_spin_compare_exchange_weak(expect, desire)
     }
 
-    #[inline]
-    pub fn try_mark_ctx_upgraded(&self) -> CmpxchResult<StVal> {
-        let expect = CtxStConf::expect_ctx_non_upgraded;
-        let desire = CtxStConf::desire_ctx_upgraded;
-        self.try_spin_compare_exchange_weak(expect, desire)
-    }
-
+    #[allow(dead_code)]
     #[inline]
     pub fn try_upgrade_to_upgradable(&self) -> bool {
         self.try_spin_compare_exchange_weak(
@@ -486,15 +448,6 @@ mod tests_ {
         let s = CtxState::<StrictOrderings>::new();
         assert!(!s.is_invalidated());
         assert_eq!(s.context_type(), CtxType::Uninit);
-        assert!(!s.try_reset_context_type());
-
-        assert!(s.try_init_context_type(CtxType::ReadOnly));
-        assert!(!s.try_init_context_type(CtxType::Uninit));
-
-        assert!(s.try_reset_context_type());
-        assert!(!s.try_reset_context_type());
-
-        assert_eq!(s.context_type(), CtxType::Uninit);
     }
 
     #[test]
@@ -502,12 +455,15 @@ mod tests_ {
         let ctx = CtxState::<StrictOrderings>::new();
         let ctx = assure_send(ctx);
         let ctx = assure_sync(ctx);
-        assert_eq!(ctx.context_type(), CtxType::ReadOnly);
+        assert_eq!(ctx.context_type(), CtxType::Uninit);
 
         // assert_eq!(ctx.reader_count(), 0);
         // assert_eq!(ctx.increase_reader_count(), 0);
         // assert_eq!(ctx.increase_reader_count(), 1);
         // assert_eq!(ctx.decrease_reader_count(), 2);
+
+        let replaced = ctx.swap_slot_ctx_type(CtxType::ReadOnly);
+        assert_eq!(replaced, CtxType::Uninit);
 
         assert!(ctx.try_upgrade_to_upgradable());
         assert_eq!(ctx.context_type(), CtxType::Upgradable);
